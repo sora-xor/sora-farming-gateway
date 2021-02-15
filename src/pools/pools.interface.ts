@@ -18,6 +18,12 @@ export interface LiquidityEvent {
   };
 }
 
+export interface MultiplePairInfo {
+  XE: PairInfo;
+  XV: PairInfo;
+  VE: PairInfo;
+}
+
 export interface PairInfo {
   reserve0: string;
   reserve1: string;
@@ -32,6 +38,12 @@ export interface PairInfo {
 
 export interface PairReserve {
   reserveUSD: string;
+}
+
+export interface MultiplePairReserve {
+  XE: PairReserve;
+  XV: PairReserve;
+  VE: PairReserve;
 }
 
 export interface UserPoolStatistic {

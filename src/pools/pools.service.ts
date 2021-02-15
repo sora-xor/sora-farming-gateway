@@ -7,10 +7,13 @@ import * as Cache from 'apollo-cache-inmemory';
 import { DocumentNode } from 'graphql';
 import {
   LiquidityEvent,
+  MultiplePairInfo,
+  MultiplePairReserve,
   PairInfo,
-  PairReserve,
   UserPoolStatistic,
 } from './pools.interface';
+import { BLOCKS } from 'src/consts';
+import userList from '../users.json';
 
 enum Tokens {
   XOR = 'XOR',
@@ -111,6 +114,31 @@ function swapStatsTokenOrder(stats: UserPoolStatistic[]): UserPoolStatistic[] {
   });
 }
 
+function generateQuery(firstBlock: number, lastBlock: number) {
+  // Suppose to make query each 20 blocks
+  const step = BLOCKS.FIVE_MINUTES - 5;
+  const len = Math.floor((lastBlock - firstBlock) / step);
+  const arrayOfBlocks = new Array(len)
+    .fill(firstBlock)
+    .map((_, i) => firstBlock + i * step);
+  const arrayOfQueries = arrayOfBlocks.map(blockNum => {
+    return `
+      XE${blockNum}: pair (id: $XE, block: { number: ${blockNum} }) {
+        reserveUSD
+      },
+      XV${blockNum}: pair (id: $XV, block: { number: ${blockNum} }) {
+        reserveUSD
+      },
+      VE${blockNum}: pair (id: $VE, block: { number: ${blockNum} }) {
+        reserveUSD
+      }
+    `;
+  });
+  return tag(`query Pair($XE: String!, $XV: String!, $VE: String!) {
+    ${arrayOfQueries.join()}
+  }`);
+}
+
 class Query {
   private queryLiquidityPositionSnapshots = tag(
     `query LiquidityPositionSnapshots($pairAddress: String!, $skip: Int!, $first: Int!) {
@@ -145,9 +173,35 @@ class Query {
     }`,
   );
   private queryPair = tag(
-    `query Pair($pairAddress: String!) {
-      pair (
-        id: $pairAddress
+    `query Pair($XE: String!, $XV: String!, $VE: String!) {
+      XE: pair (
+        id: $XE
+      ) {
+        reserve0
+        reserve1
+        reserveUSD
+        token0 {
+          symbol
+        }
+        token1 {
+          symbol
+        }
+      }
+      XV: pair (
+        id: $XV
+      ) {
+        reserve0
+        reserve1
+        reserveUSD
+        token0 {
+          symbol
+        }
+        token1 {
+          symbol
+        }
+      }
+      VE: pair (
+        id: $VE
       ) {
         reserve0
         reserve1
@@ -162,8 +216,14 @@ class Query {
     }`,
   );
   private queryPairReserve = tag(
-    `query Pair($pairAddress: String!, $block: Int!) {
-      pair(id: $pairAddress, block: { number: $block }) {
+    `query Pair($XE: String!, $XV: String!, $VE: String!, $block: Int!) {
+      XE: pair (id: $XE, block: { number: $block }) {
+        reserveUSD
+      },
+      XV: pair (id: $XV, block: { number: $block }) {
+        reserveUSD
+      },
+      VE: pair (id: $VE, block: { number: $block }) {
         reserveUSD
       }
     }`,
@@ -206,22 +266,51 @@ class Query {
     );
   }
 
-  async getPairInfoByPair(pairAddress: string): Promise<PairInfo> {
-    return swapInfoTokenOrder(
-      await this.getPairInfo(this.queryPair, {
-        pairAddress,
-      }),
-    );
+  async getPairInfoByPair(addresses: {
+    XE: string;
+    XV: string;
+    VE: string;
+  }): Promise<MultiplePairInfo> {
+    const response = await this.getPairInfo(this.queryPair, {
+      XE: addresses.XE,
+      XV: addresses.XV,
+      VE: addresses.VE,
+    });
+    return {
+      XE: swapInfoTokenOrder(response.XE),
+      XV: swapInfoTokenOrder(response.XV),
+      VE: swapInfoTokenOrder(response.VE),
+    };
   }
 
   async getPairReserveByPair(
-    pairAddress: string,
+    addresses: {
+      XE: string;
+      XV: string;
+      VE: string;
+    },
     block: number,
-  ): Promise<PairReserve> {
+  ): Promise<MultiplePairReserve> {
     return this.getPairReserve(this.queryPairReserve, {
-      pairAddress,
+      XE: addresses.XE,
+      XV: addresses.XV,
+      VE: addresses.VE,
       block,
     });
+  }
+
+  async getPairReserveByPairInRange(
+    addresses: {
+      XE: string;
+      XV: string;
+      VE: string;
+    },
+    block: {
+      firstBlock: number;
+      lastBlock: number;
+    },
+  ) {
+    return this.getPairReserveInRange(block, addresses);
   }
 
   async getUserStatsByPairs(
@@ -241,8 +330,27 @@ class Query {
     variables: { pairAddress: string; skip: number; first: number },
   ): Promise<LiquidityEvent[]> {
     try {
+      let allEvents: LiquidityEvent[] = [];
+      let lastResponseLen = 0;
       const { data } = await this.client.query({ query, variables });
-      return data.liquidityPositionSnapshots;
+
+      allEvents = allEvents.concat(data.liquidityPositionSnapshots);
+      lastResponseLen = data.liquidityPositionSnapshots.length;
+
+      while (lastResponseLen === 1000) {
+        variables.skip += 1000;
+        const { data } = await this.client.query({
+          query,
+          variables: {
+            ...variables,
+            skip: variables.skip,
+          },
+        });
+        allEvents = allEvents.concat(data.liquidityPositionSnapshots);
+        lastResponseLen = data.liquidityPositionSnapshots.length;
+      }
+
+      return allEvents;
     } catch (error) {
       console.error(error);
     }
@@ -250,11 +358,11 @@ class Query {
 
   private async getPairInfo(
     query: DocumentNode,
-    variables: { pairAddress: string },
-  ): Promise<PairInfo> {
+    variables: { XE: string; XV: string; VE: string },
+  ): Promise<MultiplePairInfo> {
     try {
       const { data } = await this.client.query({ query, variables });
-      return data.pair;
+      return data;
     } catch (error) {
       console.error(error);
     }
@@ -262,11 +370,24 @@ class Query {
 
   private async getPairReserve(
     query: DocumentNode,
-    variables: { pairAddress: string; block: number },
-  ): Promise<PairReserve> {
+    variables: { XE: string; XV: string; VE: string; block: number },
+  ): Promise<MultiplePairReserve> {
     try {
       const { data } = await this.client.query({ query, variables });
-      return data.pair;
+      return data;
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  private async getPairReserveInRange(
+    block: { firstBlock: number; lastBlock: number },
+    variables: { XE: string; XV: string; VE: string },
+  ): Promise<MultiplePairReserve> {
+    const query = generateQuery(block.firstBlock, block.lastBlock);
+    try {
+      const { data } = await this.client.query({ query, variables });
+      return data;
     } catch (error) {
       console.error(error);
     }
@@ -357,5 +478,65 @@ export class PoolsService {
 
   get mooniswap() {
     return new Query(this.mooniswapClient);
+  }
+}
+
+@Injectable()
+export class MockPoolsService {
+  uniswapLastBlock = 10850000;
+  mooniswapLastBlock = 10850000;
+
+  uniswapDone = false;
+  mooniswapDone = false;
+
+  users = userList;
+
+  generateUserEvent(block: number, address: string) {
+    return {
+      block,
+      user: {
+        id: address,
+      },
+      token0PriceUSD: '10',
+      liquidityTokenBalance: '1000',
+      liquidityTokenTotalSupply: '1000',
+      reserveUSD: '1000000',
+      reserve0: '10000',
+      reserve1: '10000',
+    };
+  }
+
+  get uniswap() {
+    const getLiquidityEventsByPair = () => {
+      if (this.uniswapDone) return [];
+      this.uniswapDone = true;
+      return this.users.reduce((prev, address) => {
+        this.uniswapLastBlock += 1;
+        return [
+          ...prev,
+          this.generateUserEvent(this.uniswapLastBlock, address),
+        ];
+      }, []);
+    };
+    return {
+      getLiquidityEventsByPair,
+    };
+  }
+
+  get mooniswap() {
+    const getLiquidityEventsByPair = () => {
+      if (this.mooniswapDone) return [];
+      this.mooniswapDone = true;
+      return this.users.reduce((prev, address) => {
+        this.mooniswapLastBlock += 1;
+        return [
+          ...prev,
+          this.generateUserEvent(this.mooniswapLastBlock, address),
+        ];
+      }, []);
+    };
+    return {
+      getLiquidityEventsByPair,
+    };
   }
 }

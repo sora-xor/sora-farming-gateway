@@ -6,5 +6,5 @@ export enum BLOCKS {
   THREE_MONTHS = 606462,
 }
 
-export const MAX_PSWAP = new BN(2000000);
+export const MAX_PSWAP = new BN(4000000);
 export const BLOCK_OFFSET = BLOCKS.MINUTE;

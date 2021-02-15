@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import BN from 'bignumber.js';
 import { DatabaseService } from 'src/database/database.service';
-import { LiquidityEvent, UserPoolStatistic } from 'src/pools/pools.interface';
+import {
+  LiquidityEvent,
+  PairInfo,
+  UserPoolStatistic,
+} from 'src/pools/pools.interface';
 import { User } from 'src/schemas/user.schema';
 import {
   Liquidity,
@@ -15,9 +19,13 @@ import {
   PoolsService,
   UniswapConfig,
 } from 'src/pools/pools.service';
-import { BLOCKS } from 'src/consts/consts';
+import { BLOCKS } from 'src/consts';
 
 BN.config({ DECIMAL_PLACES: 10 });
+
+const getEventsUpToBlock = (events: LiquidityEvent[], currentBlock: number) => {
+  return events.filter(({ block }) => block <= currentBlock);
+};
 
 const uniqueEventsByUser = (events: LiquidityEvent[]): LiquidityEvent[] => {
   const users = new Set();
@@ -30,14 +38,20 @@ const uniqueEventsByUser = (events: LiquidityEvent[]): LiquidityEvent[] => {
   return result.slice().reverse();
 };
 
-const sortEvents = (
-  eventsA: LiquidityEvent[],
-  eventsB: LiquidityEvent[],
-): LiquidityEvent[] => {
-  return [...eventsA, ...eventsB].sort(
-    (eventA: LiquidityEvent, eventB: LiquidityEvent) =>
-      eventA.block - eventB.block,
-  );
+const getUsersViCache = (cache: Map<number, BN>, block: number): BN => {
+  if (cache.has(block)) {
+    return cache.get(block);
+  }
+  return new BN(-1);
+};
+
+const updateUsersViCache = (
+  cache: Map<number, BN>,
+  block: number,
+  value: BN,
+): void => {
+  if (cache.has(block)) return;
+  cache.set(block, value);
 };
 
 const getUserLiquidityEvents = (
@@ -69,12 +83,18 @@ export class RewardService {
     blocks: {
       startBlock: number;
       lastBlock: number;
+      formulaUpdateBlock: number;
     },
     pool: {
       uniswap: PoolLiquidityEvents;
       mooniswap: PoolLiquidityEvents;
     },
     liquiditySnapshots: TotalLiquidity[],
+    cache: {
+      XE: Map<number, BN>;
+      XV: Map<number, BN>;
+      VE: Map<number, BN>;
+    },
   ): Promise<{ user: User; reward: BN }> {
     const user = await this.getUserModel(address);
 
@@ -87,6 +107,8 @@ export class RewardService {
       user,
       blocks.startBlock,
       blocks.lastBlock,
+      blocks.formulaUpdateBlock,
+      cache.XE,
     );
     const rewardXV = this.calculateReward(
       {
@@ -97,6 +119,8 @@ export class RewardService {
       user,
       blocks.startBlock,
       blocks.lastBlock,
+      blocks.formulaUpdateBlock,
+      cache.XV,
     );
     const rewardVE = this.calculateReward(
       {
@@ -107,6 +131,8 @@ export class RewardService {
       user,
       blocks.startBlock,
       blocks.lastBlock,
+      blocks.formulaUpdateBlock,
+      cache.VE,
     );
 
     const reward = new BN(0)
@@ -121,7 +147,17 @@ export class RewardService {
   }
 
   async getLiquidityByAddress(address: string): Promise<Liquidity> {
-    const uniswap = await this.poolsService.uniswap.getUserStatsByPairs(
+    const uniswapInfo = await this.poolsService.uniswap.getPairInfoByPair({
+      XE: UniswapConfig.XE.address,
+      XV: UniswapConfig.XV.address,
+      VE: UniswapConfig.VE.address,
+    });
+    const mooniswapInfo = await this.poolsService.mooniswap.getPairInfoByPair({
+      XE: MooniswapConfig.XE.address,
+      XV: MooniswapConfig.XV.address,
+      VE: MooniswapConfig.VE.address,
+    });
+    const userUniswap = await this.poolsService.uniswap.getUserStatsByPairs(
       address,
       [
         UniswapConfig.XE.address,
@@ -129,7 +165,7 @@ export class RewardService {
         UniswapConfig.VE.address,
       ],
     );
-    const mooniswap = await this.poolsService.mooniswap.getUserStatsByPairs(
+    const userMooniswap = await this.poolsService.mooniswap.getUserStatsByPairs(
       address,
       [
         MooniswapConfig.XE.address,
@@ -138,57 +174,79 @@ export class RewardService {
       ],
     );
     return {
-      XE: this.calculateLiquidity({
-        uniswap: uniswap[0],
-        mooniswap: mooniswap[0],
-      }),
-      XV: this.calculateLiquidity({
-        uniswap: uniswap[1],
-        mooniswap: mooniswap[1],
-      }),
-      VE: this.calculateLiquidity({
-        uniswap: uniswap[2],
-        mooniswap: mooniswap[2],
-      }),
+      XE: this.calculateLiquidity(
+        {
+          uniswap: uniswapInfo.XE,
+          mooniswap: mooniswapInfo.XE,
+        },
+        {
+          uniswap: userUniswap[0],
+          mooniswap: userMooniswap[0],
+        },
+      ),
+      XV: this.calculateLiquidity(
+        {
+          uniswap: uniswapInfo.XV,
+          mooniswap: mooniswapInfo.XV,
+        },
+        {
+          uniswap: userUniswap[1],
+          mooniswap: userMooniswap[1],
+        },
+      ),
+      VE: this.calculateLiquidity(
+        {
+          uniswap: uniswapInfo.VE,
+          mooniswap: mooniswapInfo.VE,
+        },
+        {
+          uniswap: userUniswap[2],
+          mooniswap: userMooniswap[2],
+        },
+      ),
     };
   }
 
-  private calculateLiquidity(user: {
-    uniswap: UserPoolStatistic;
-    mooniswap: UserPoolStatistic;
-  }): LiquidityPool {
+  private calculateLiquidity(
+    pair: {
+      uniswap: PairInfo;
+      mooniswap: PairInfo;
+    },
+    user: {
+      uniswap: UserPoolStatistic;
+      mooniswap: UserPoolStatistic;
+    },
+  ): LiquidityPool {
     const check = (v: BN) => (v.isFinite() ? v : new BN(0));
-    const uniswapStats = user.uniswap;
-    const mooniswapStats = user.mooniswap;
 
     if (
-      new BN(uniswapStats.liquidityTokenBalance).eq(0) &&
-      new BN(mooniswapStats.liquidityTokenBalance).eq(0)
+      new BN(user.uniswap.liquidityTokenBalance).eq(0) &&
+      new BN(user.mooniswap.liquidityTokenBalance).eq(0)
     )
       return { token0: '0', token1: '0', percent: '0' };
 
     const uniswapPercent = check(
-      new BN(uniswapStats.liquidityTokenBalance).div(
-        uniswapStats.pair.totalSupply,
+      new BN(user.uniswap.liquidityTokenBalance).div(
+        user.uniswap.pair.totalSupply,
       ),
     );
     const mooniswapPercent = check(
-      new BN(mooniswapStats.liquidityTokenBalance).div(
-        mooniswapStats.pair.totalSupply,
+      new BN(user.mooniswap.liquidityTokenBalance).div(
+        user.mooniswap.pair.totalSupply,
       ),
     );
     const userToken0Amount = new BN(0)
-      .plus(uniswapPercent.multipliedBy(uniswapStats.pair.reserve0))
-      .plus(mooniswapPercent.multipliedBy(mooniswapStats.pair.reserve0));
+      .plus(uniswapPercent.multipliedBy(user.uniswap.pair.reserve0))
+      .plus(mooniswapPercent.multipliedBy(user.mooniswap.pair.reserve0));
     const userToken1Amount = new BN(0)
-      .plus(uniswapPercent.multipliedBy(uniswapStats.pair.reserve1))
-      .plus(mooniswapPercent.multipliedBy(mooniswapStats.pair.reserve1));
+      .plus(uniswapPercent.multipliedBy(user.uniswap.pair.reserve1))
+      .plus(mooniswapPercent.multipliedBy(user.mooniswap.pair.reserve1));
 
-    const reserve0 = new BN(0)
-      .plus(uniswapStats.pair.reserve0)
-      .plus(mooniswapStats.pair.reserve0);
+    const totalPairReserve0 = new BN(0)
+      .plus(pair.uniswap.reserve0)
+      .plus(pair.mooniswap.reserve0);
 
-    const overallPercent = new BN(userToken0Amount).div(reserve0);
+    const overallPercent = new BN(userToken0Amount).div(totalPairReserve0);
 
     return {
       token0: userToken0Amount.toString(),
@@ -206,6 +264,8 @@ export class RewardService {
     user: User,
     startBlock: number,
     lastBlock: number,
+    formulaUpdateBlock: number,
+    usersViCache: Map<number, BN>,
   ): BN {
     const userLiquidityEvents = getUserLiquidityEvents(user, events);
 
@@ -220,10 +280,12 @@ export class RewardService {
         userStartBlock: user.get('lastBlock'),
         gameStartBlock: startBlock,
         ethLatestBlock: lastBlock,
+        formulaUpdateBlock,
       },
       liquiditySnapshots,
       userLiquidityEvents,
       events,
+      usersViCache,
     );
 
     return reward;
@@ -234,6 +296,7 @@ export class RewardService {
       userStartBlock: number;
       gameStartBlock: number;
       ethLatestBlock: number;
+      formulaUpdateBlock: number;
     },
     liquiditySnapshots: TotalLiquidity[],
     userLiquidityEvents: {
@@ -244,6 +307,7 @@ export class RewardService {
       uniswap: LiquidityEvent[];
       mooniswap: LiquidityEvent[];
     },
+    usersViCache: Map<number, BN>,
   ): BN {
     const T = BLOCKS.THREE_MONTHS;
     const blockDiffTime = (startBlock: number | BN, currentBlock: number) =>
@@ -291,12 +355,16 @@ export class RewardService {
       liquidityAmount: BN,
       tokensAmount: BN,
       otherUsersVi: BN,
-    ) =>
-      new BN(p(gameTime, liquidityAmount)).multipliedBy(
+      isNewFormulaRequired: boolean,
+    ) => {
+      const pGameTime = isNewFormulaRequired ? new BN(1) : gameTime;
+      const pValue = p(pGameTime, liquidityAmount);
+      return new BN(pValue).multipliedBy(
         Vi(userTime, gameTime)
           .multipliedBy(tokensAmount)
           .dividedBy(otherUsersVi),
       );
+    };
     /**
      * Calculates the number of tokens for user
      * tokens = liqBalance / liqTotal * reserve / 2
@@ -311,7 +379,6 @@ export class RewardService {
         .div(lastEvent.liquidityTokenTotalSupply)
         .multipliedBy(lastEvent.reserveUSD)
         .div(2);
-    const checkFinite = (v: BN, min: BN) => (v.isFinite() ? v : min);
 
     const getLastEvents = (
       events: {
@@ -323,11 +390,9 @@ export class RewardService {
       uniswap: LiquidityEvent;
       mooniswap: LiquidityEvent;
     } => {
-      const nearestEvent = (events: LiquidityEvent[]): LiquidityEvent =>
-        last(events.filter(({ block }) => block <= currentBlock));
       return {
-        uniswap: nearestEvent(events.uniswap),
-        mooniswap: nearestEvent(events.mooniswap),
+        uniswap: last(getEventsUpToBlock(events.uniswap, currentBlock)),
+        mooniswap: last(getEventsUpToBlock(events.mooniswap, currentBlock)),
       };
     };
 
@@ -341,15 +406,13 @@ export class RewardService {
         mooniswap: LiquidityEvent;
       },
     ): BN => {
-      const calc = (event: LiquidityEvent, lastPoolEvent: LiquidityEvent) =>
-        checkFinite(calcUserTokensAmount(event, lastPoolEvent), new BN(0));
       const uniswapTokens =
         userEvents.uniswap && lastEvents.uniswap
-          ? calc(userEvents.uniswap, lastEvents.uniswap)
+          ? calcUserTokensAmount(userEvents.uniswap, lastEvents.uniswap)
           : new BN(0);
       const mooniswapTokens =
         userEvents.mooniswap && lastEvents.mooniswap
-          ? calc(userEvents.mooniswap, lastEvents.mooniswap)
+          ? calcUserTokensAmount(userEvents.mooniswap, lastEvents.mooniswap)
           : new BN(0);
       return new BN(0).plus(uniswapTokens).plus(mooniswapTokens);
     };
@@ -367,15 +430,21 @@ export class RewardService {
         currentBlock: number,
       ): BN => {
         let block = currentBlock;
-        for (let event of events.slice().reverse()) {
+        for (const event of events.slice().reverse()) {
           if (new BN(event.liquidityTokenBalance).eq(0)) break;
           block = event.block;
         }
         return new BN(block);
       };
       const earlierBlock = BN.min(
-        getNearestToZeroLiqBlock(events.uniswap, currentBlock),
-        getNearestToZeroLiqBlock(events.mooniswap, currentBlock),
+        getNearestToZeroLiqBlock(
+          getEventsUpToBlock(events.uniswap, currentBlock),
+          currentBlock,
+        ),
+        getNearestToZeroLiqBlock(
+          getEventsUpToBlock(events.mooniswap, currentBlock),
+          currentBlock,
+        ),
       );
       const userTime = blockDiffTime(earlierBlock, currentBlock);
       return userTime.gte(gameTime) ? gameTime : userTime;
@@ -399,30 +468,37 @@ export class RewardService {
       const uniqueMooniswap = uniqueEventsByUser(
         events.mooniswap.filter(({ block }) => block <= currentBlock),
       );
-      const allEvents = uniqueEventsByUser([
+      const allUniqueEvents = uniqueEventsByUser([
         ...uniqueUniswap,
         ...uniqueMooniswap,
       ]);
-      const users = allEvents.map(event => ({
-        uniswap: uniqueUniswap.find(({ user }) => user.id === event.user.id),
-        mooniswap: uniqueMooniswap.find(
-          ({ user }) => user.id === event.user.id,
-        ),
-      }));
-      return users.reduce((prev, user) => {
+      return allUniqueEvents.reduce((prev, event) => {
+        const userLiquidityEvents = {
+          uniswap: events.uniswap.filter(
+            ({ user }) => user.id === event.user.id,
+          ),
+          mooniswap: events.mooniswap.filter(
+            ({ user }) => user.id === event.user.id,
+          ),
+        };
+        const userLastEvents = getLastEvents(userLiquidityEvents, currentBlock);
         const userTime = getUserGameTime(
-          {
-            uniswap: user.uniswap ? [user.uniswap] : [],
-            mooniswap: user.mooniswap ? [user.mooniswap] : [],
-          },
+          userLiquidityEvents,
           gameTime,
           currentBlock,
         );
         if (userTime.lte(0)) return prev;
-        const userTokensAmount = getUserTokensAmount(lastEvents, user);
+        const userTokensAmount = getUserTokensAmount(
+          lastEvents,
+          userLastEvents,
+        );
         if (userTokensAmount.eq(0)) return prev;
 
-        return prev.plus(Vi(userTime, gameTime).multipliedBy(userTokensAmount));
+        return prev.plus(
+          Vi(userTime, gameTime)
+            .multipliedBy(userTokensAmount)
+            .decimalPlaces(8),
+        );
       }, new BN(0));
     };
 
@@ -449,22 +525,29 @@ export class RewardService {
       const userTokensAmount = getUserTokensAmount(poolLastEvent, userEvent);
       if (userTokensAmount.eq(0)) continue;
 
-      const totalUsersVi = getTotalUsersVestingCoef(
-        poolLastEvent,
-        events,
-        gameTime,
-        i,
-      );
+      let totalUsersVi = getUsersViCache(usersViCache, i);
+      if (totalUsersVi.eq(-1)) {
+        totalUsersVi = getTotalUsersVestingCoef(
+          poolLastEvent,
+          events,
+          gameTime,
+          i,
+        );
+        updateUsersViCache(usersViCache, i, totalUsersVi);
+      }
+
       const liquiditySnapshot: TotalLiquidity = last(
         liquiditySnapshots.filter(({ block }) => block <= i),
       );
 
+      const isNewFormulaRequired = blocks.formulaUpdateBlock <= i;
       const rm = Rm(
         userTime,
         gameTime,
         new BN(liquiditySnapshot.liquidityUSD),
         userTokensAmount,
         totalUsersVi,
+        isNewFormulaRequired,
       );
 
       result = result.plus(rm.isNegative() ? new BN(0) : rm);
@@ -479,8 +562,7 @@ export class RewardService {
     const newUser = await this.databaseService.createUser({
       address,
       lastBlock: 0,
-      uniswap: { reward: '0' },
-      mooniswap: { reward: '0' },
+      reward: '0',
     });
     newUser.set({ address });
     return newUser;

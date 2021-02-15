@@ -5,12 +5,11 @@ import { RewardService } from 'src/reward/reward.service';
 
 import BN from 'bignumber.js';
 import { User } from 'src/schemas/user.schema';
-import { BLOCKS, BLOCK_OFFSET, MAX_PSWAP } from 'src/consts/consts';
+import { BLOCK_OFFSET, MAX_PSWAP } from 'src/consts';
 import { CustomLoggerService } from 'src/logger/logger.service';
 
-function getLastBlockWithOffset(block: number, gameLastBlock: number): BN {
-  const last = new BN(block).minus(BLOCK_OFFSET);
-  return last.gte(gameLastBlock) ? new BN(gameLastBlock) : last;
+function getLastBlockWithOffset(block: number): BN {
+  return new BN(block).minus(BLOCK_OFFSET)
 }
 
 function getAmountPSWAP(reward: BN, currentAmountPSWAP: BN): BN {
@@ -18,6 +17,18 @@ function getAmountPSWAP(reward: BN, currentAmountPSWAP: BN): BN {
   if (currentAmountPSWAP.plus(reward).lt(MAX_PSWAP)) return reward;
 
   return MAX_PSWAP.minus(currentAmountPSWAP);
+}
+
+function createCacheStorage(): {
+  XE: Map<number, BN>;
+  XV: Map<number, BN>;
+  VE: Map<number, BN>;
+} {
+  return {
+    XE: new Map<number, BN>(),
+    XV: new Map<number, BN>(),
+    VE: new Map<number, BN>(),
+  };
 }
 
 @Injectable()
@@ -70,18 +81,22 @@ export class ChildService {
     const currentAmountPSWAP = new BN(info.get('pswap'));
     const startBlock = info.get('startBlock');
     const lastProcessedBlock = info.get('lastBlock');
-    const gameLastBlock = startBlock + BLOCKS.THREE_MONTHS;
-    const lastBlockWithOffset = getLastBlockWithOffset(
-      lastBlock,
-      gameLastBlock,
-    ).toNumber();
+    const lastBlockWithOffset = getLastBlockWithOffset(lastBlock).toNumber();
+    const formulaUpdateBlock = info.get('formulaUpdateBlock');
+    const cache = createCacheStorage();
 
     if (currentAmountPSWAP.gte(MAX_PSWAP)) return;
     if (new BN(lastProcessedBlock).eq(lastBlockWithOffset)) return;
     if (new BN(lastBlockWithOffset).lte(startBlock)) return;
+    if (info.get('status') === 0) {
+      this.logger.log(`⚠️ Game is stopped\nInformation: ${info}`);
+      return;
+    }
 
     let newAmountPSWAP = currentAmountPSWAP;
-    this.logger.log('Begin of reward calculation');
+    this.logger.log(
+      `Begin of reward calculation\nStart block: ${lastProcessedBlock}\nLast block: ${lastBlockWithOffset}`,
+    );
     for (const address of users) {
       if (newAmountPSWAP.gte(MAX_PSWAP)) continue;
       const { user, reward } = await this.rewardService.getRewardByAddress(
@@ -89,12 +104,14 @@ export class ChildService {
         {
           startBlock,
           lastBlock: lastBlockWithOffset,
+          formulaUpdateBlock,
         },
         {
           uniswap: uniswapEvents,
           mooniswap: mooniswapEvents,
         },
         liquiditySnapshots,
+        cache,
       );
       const realAmount = getAmountPSWAP(reward, newAmountPSWAP);
       await this.updateUserData(user, lastBlockWithOffset, realAmount);

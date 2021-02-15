@@ -13,6 +13,7 @@ interface InfoDTO {
   pswap: string;
   startBlock: number;
   lastBlock: number;
+  formulaUpdateBlock: number;
   lastUpdateTimestamp: string;
 }
 
@@ -24,12 +25,7 @@ interface LiquiditySnapshotDTO {
 export interface UserDTO {
   address: string;
   lastBlock: number;
-  uniswap: {
-    reward: string;
-  };
-  mooniswap: {
-    reward: string;
-  };
+  reward: string;
 }
 
 export enum EventName {
@@ -95,6 +91,7 @@ export class DatabaseService implements OnModuleInit {
         pswap: '0',
         startBlock,
         lastBlock: startBlock,
+        formulaUpdateBlock: this.appConfigService.ethereumFormulaUpdateBlock,
         lastUpdateTimestamp: new Date().toISOString(),
       });
     }

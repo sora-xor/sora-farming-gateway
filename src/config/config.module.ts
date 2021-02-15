@@ -11,6 +11,7 @@ import { ConfigModule } from '@nestjs/config';
         APP_DATABASE: Joi.string(),
         APP_ETHEREUM: Joi.string().uri(),
         APP_ETHEREUM_START_BLOCK: Joi.number().optional(),
+        APP_ETHEREUM_FORMULA_UPDATE_BLOCK: Joi.number().optional(),
         APP_HOST: Joi.string()
           .ip()
           .default('0.0.0.0'),

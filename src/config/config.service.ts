@@ -4,10 +4,14 @@ import { ConfigService, registerAs } from '@nestjs/config';
 export const configFactory = registerAs('app', () => ({
   ethereum: process.env.APP_ETHEREUM,
   ethereumStartBlock: process.env.APP_ETHEREUM_START_BLOCK,
+  ethereumFormulaUpdateBlock: process.env.APP_ETHEREUM_FORMULA_UPDATE_BLOCK,
   database: process.env.APP_DATABASE,
   host: process.env.APP_HOST,
   port: process.env.APP_PORT,
 }));
+
+const getBlock = (block: string | (null | undefined)) =>
+  block ? Number(block) : 0;
 
 @Injectable()
 export class AppConfigService {
@@ -26,8 +30,20 @@ export class AppConfigService {
   }
 
   get ethereumStartBlock(): number {
-    const block = this.configService.get('app.ethereumStartBlock');
-    return block ? Number(block) : 0;
+    return getBlock(this.configService.get('app.ethereumStartBlock'));
+  }
+
+  /**
+   * The function returns a block (number)
+   * that will be used in the rewards service.
+   * Starting from this block the formula counts differently.
+   *
+   * @readonly
+   * @type {number}
+   * @memberof AppConfigService
+   */
+  get ethereumFormulaUpdateBlock(): number {
+    return getBlock(this.configService.get('app.ethereumFormulaUpdateBlock'));
   }
 
   get database(): string {
