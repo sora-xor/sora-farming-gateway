@@ -21,7 +21,7 @@ Application depends on database (MongoDB).
 
 `APP_ETHEREUM_START_BLOCK` is the first block for starting calculations (ex. `"10843100"`).
 
-`APP_DATABASE` - url to connect to database. Read more about ![connection string](https://docs.mongodb.com/manual/reference/connection-string/)
+`APP_DATABASE` - url to connect to database. Read more about [connection string](https://docs.mongodb.com/manual/reference/connection-string/)
 
 `APP_HOST` - address at which to start the application (ex. `"0.0.0.0"`).
 
@@ -43,52 +43,38 @@ Access-Control-Allow-Origin: *
 Content-Type: application/json; charset=utf-8
 Content-Length: 525
 ETag: W/"20d-3D6BSQVOdNODZuowJyn4O+JURkk"
-Date: Mon, 05 Oct 2020 10:15:34 GMT
+Date: Mon, 10 Oct 2020 13:37:00 GMT
 Connection: keep-alive
 Keep-Alive: timeout=5
 
 {
-  "timestamp": 1601892934952,
+  "timestamp": 1607002375317,
   "user": {
-    "mooniswapVE": {
-      "reward": "0",
-      "lastBlock": 0
-    },
-    "mooniswapXV": {
-      "reward": "0",
-      "lastBlock": 0
-    },
-    "mooniswapXE": {
-      "reward": "0",
-      "lastBlock": 0
-    },
-    "uniswapVE": {
-      "reward": "0",
-      "lastBlock": 0
-    },
-    "uniswapXV": {
-      "reward": "0",
-      "lastBlock": 0
-    },
-    "uniswapXE": {
-      "reward": "0",
-      "lastBlock": 0
-    },
+    "reward": "0",
+    "lastBlock": 10000000,
     "_id": "5f76429f309bac0cc7eb026c",
     "address": "0x0000000000000000000000000000000000000000",
     "__v": 0
   },
   "liquidity": {
     "XE": {
-      "XOR": "0",
-      "ETH": "0",
+      "token0": "0",
+      "token1": "0",
+      "percent": "0"
+    },
+    "XV": {
+      "token0": "0",
+      "token1": "0",
+      "percent": "0"
+    },
+    "VE": {
+      "token0": "0",
+      "token1": "0",
       "percent": "0"
     }
   }
 }
 ```
-# Logging
-
 # Monitoring
 ## Check application status
 It is used to check the status of the application. Returns JSON `{ status: 'up' }` and code 200 if all is well.
@@ -114,6 +100,3 @@ Keep-Alive: timeout=5
 
 # Storage
 The application uses the *MongoDB* database for data storage. At least once a minute, the application accesses the database to store certain information.
-
-# Scaling
-# Queue (optional)
